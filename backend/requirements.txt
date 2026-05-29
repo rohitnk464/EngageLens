@@ -1,33 +1,33 @@
 # Core
-fastapi==0.115.0
-uvicorn[standard]==0.30.0
-python-dotenv==1.0.1
-pydantic==2.9.0
-pydantic-settings==2.5.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-dotenv>=1.0.1
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
 
 # LangChain / LangGraph
-langgraph==0.2.60
-langchain-core==0.3.30
-langchain-openai==0.2.14
-langchain-chroma==0.2.2
-langchain-huggingface==0.1.2
-langchain-text-splitters==0.3.4
+langgraph>=0.2.60
+langchain-core>=0.3.30
+langchain-openai>=0.2.14
+langchain-chroma>=0.2.2
+langchain-huggingface>=0.1.2
+langchain-text-splitters>=0.3.4
 
 # Vector DB
-chromadb==0.5.23
+chromadb>=0.5.23
 
 # Embeddings (local)
-sentence-transformers==3.3.0
+sentence-transformers>=3.3.0
 
 # Transcript extraction
-youtube-transcript-api==0.6.3
-yt-dlp==2024.12.23
+youtube-transcript-api>=1.2.4
+yt-dlp>=2024.12.23
 
 # Audio transcription (for Instagram reels)
-openai==1.58.0
+openai>=1.58.0
 
 # SSE streaming
-sse-starlette==2.1.0
+sse-starlette>=2.1.0
 
 # Utilities
-httpx==0.28.0
+httpx>=0.28.0

@@ -12,15 +12,13 @@ import logging
 from typing import Optional, Tuple
 
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import (
-    TranscriptsDisabled,
-    NoTranscriptFound,
-    VideoUnavailable,
-)
 
 from app.models.schemas import VideoMetadata, TranscriptChunk, VideoData, Platform, VideoLabel
 
 logger = logging.getLogger(__name__)
+
+# Instantiate API client (v1.x requires instance, not static methods)
+_ytt_api = YouTubeTranscriptApi()
 
 
 # ─── URL Parsing ─────────────────────────────────────────────────────────────
@@ -53,7 +51,10 @@ def is_youtube_url(url: str) -> bool:
 
 def get_youtube_transcript(video_id: str) -> Tuple[str, list[TranscriptChunk]]:
     """
-    Fetch YouTube transcript using youtube-transcript-api.
+    Fetch YouTube transcript using youtube-transcript-api v1.x.
+
+    Uses instance-based API (v1.x) with .fetch() instead of static .get_transcript().
+    Returns FetchedTranscript with snippet objects (access via .text, .start, .duration).
 
     Returns:
         Tuple of (full_text, list of TranscriptChunk with timestamps)
@@ -62,36 +63,44 @@ def get_youtube_transcript(video_id: str) -> Tuple[str, list[TranscriptChunk]]:
         ValueError if transcript is not available
     """
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-    except TranscriptsDisabled:
-        raise ValueError(f"Transcripts are disabled for video {video_id}")
-    except NoTranscriptFound:
-        # Try auto-generated transcripts in any language
-        try:
-            transcript_entries = YouTubeTranscriptApi.list_transcripts(video_id)
-            # Try to find any auto-generated transcript and translate to English
-            for transcript in transcript_entries:
-                if transcript.is_generated:
-                    transcript_list = transcript.translate('en').fetch()
-                    break
-            else:
-                raise ValueError(f"No transcript found for video {video_id}")
-        except Exception as e:
-            raise ValueError(f"No transcript found for video {video_id}: {str(e)}")
-    except VideoUnavailable:
-        raise ValueError(f"Video {video_id} is unavailable")
+        # v1.x API: use instance .fetch() method
+        transcript = _ytt_api.fetch(video_id)
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "disabled" in error_msg:
+            raise ValueError(f"Transcripts are disabled for video {video_id}")
+        elif "unavailable" in error_msg:
+            raise ValueError(f"Video {video_id} is unavailable")
+        else:
+            # Try listing transcripts and finding an auto-generated one
+            try:
+                transcript_list = _ytt_api.list(video_id)
+                # Try to find any auto-generated transcript and translate to English
+                found = False
+                for t in transcript_list:
+                    if t.is_generated:
+                        transcript = t.translate("en").fetch()
+                        found = True
+                        break
+                if not found:
+                    raise ValueError(f"No transcript found for video {video_id}")
+            except ValueError:
+                raise
+            except Exception as inner_e:
+                raise ValueError(f"No transcript found for video {video_id}: {str(inner_e)}")
 
     # Build transcript chunks with timing
+    # v1.x returns FetchedTranscript with snippet objects (attributes, not dict keys)
     chunks = []
-    for entry in transcript_list:
+    for snippet in transcript:
         chunks.append(TranscriptChunk(
-            text=entry['text'],
-            start_time=entry['start'],
-            duration=entry.get('duration', 0.0),
+            text=snippet.text,
+            start_time=snippet.start,
+            duration=getattr(snippet, 'duration', 0.0),
         ))
 
     # Combine into full text
-    full_text = " ".join(entry['text'] for entry in transcript_list)
+    full_text = " ".join(snippet.text for snippet in transcript)
 
     logger.info(f"Extracted transcript for {video_id}: {len(chunks)} segments, {len(full_text)} chars")
     return full_text, chunks
