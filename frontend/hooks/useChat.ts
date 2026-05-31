@@ -1,174 +1,140 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
+import { streamChat } from '@/lib/api';
+import { ChatMessage, SourceCitation } from '@/lib/types';
 
-export interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  sources?: Source[];
-  videoComparison?: VideoComparison;
-}
-
-export interface Source {
-  video_label: 'A' | 'B';
-  chunk_index: number;
-  chunk_text: string;
-  relevance_score: number;
-}
-
-export interface VideoComparison {
-  video1: VideoMeta;
-  video2: VideoMeta;
-}
-
-export interface VideoMeta {
-  video_id: string;
-  platform: 'youtube' | 'instagram';
-  label: 'A' | 'B';
-  url: string;
-  title: string;
-  creator: string;
-  views: number;
-  likes: number;
-  comments: number;
-  engagement_rate: number;
-  thumbnail_url: string;
-  duration?: number;
-  upload_date?: string;
-}
-
-const FASTAPI_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+export type { ChatMessage, SourceCitation };
 
 export function useChat(sessionId: string | null) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const abortRef = useRef<boolean>(false);
 
-  const sendMessage = useCallback(async (userInput: string) => {
-    if (!sessionId) {
-      console.error("No session ID provided. Analyze videos first.");
-      return;
-    }
-
-    // Abort previous stream if exists
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    // Add user message immediately (optimistic)
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
+  const addUserMessage = useCallback((content: string): string => {
+    const id = crypto.randomUUID();
+    const msg: ChatMessage = {
+      id,
       role: 'user',
-      content: userInput,
+      content,
+      timestamp: new Date(),
     };
-
-    // Add placeholder for assistant
-    const assistantMessage: Message = {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: '',
-    };
-
-    setMessages(prev => [...prev, userMessage, assistantMessage]);
-    setIsStreaming(true);
-
-    try {
-      const response = await fetch(`${FASTAPI_URL}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: userInput,
-          session_id: sessionId,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!response.body) throw new Error('No response body');
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let accumulatedContent = '';
-      let sources: Source[] = [];
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        
-        // Parse SSE events (split on double newline)
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || ''; // Keep incomplete event in buffer
-
-        for (const event of events) {
-          if (!event.startsWith('data: ')) continue;
-          const dataStr = event.slice(6); // Remove 'data: ' prefix
-          
-          if (dataStr === '[DONE]') continue;
-
-          try {
-            const parsed = JSON.parse(dataStr);
-            
-            if (parsed.type === 'token') {
-              accumulatedContent += parsed.content;
-              // Update the last message with accumulated content
-              setMessages(prev => {
-                const updated = [...prev];
-                updated[updated.length - 1] = {
-                  ...updated[updated.length - 1],
-                  content: accumulatedContent,
-                };
-                return updated;
-              });
-            } else if (parsed.type === 'sources') {
-              sources = parsed.sources;
-            } else if (parsed.type === 'error') {
-               accumulatedContent += `\n\n[Error: ${parsed.content}]`;
-            }
-          } catch {
-            // Ignore parse errors for individual events to keep streaming robust
-          }
-        }
-      }
-
-      // Final update with sources
-      setMessages(prev => {
-        const updated = [...prev];
-        updated[updated.length - 1] = {
-          ...updated[updated.length - 1],
-          content: accumulatedContent,
-          sources,
-        };
-        return updated;
-      });
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        console.error('Stream error:', err);
-        setMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = {
-            ...updated[updated.length - 1],
-            content: 'Sorry, an error occurred while streaming the response.',
-          };
-          return updated;
-        });
-      }
-    } finally {
-      setIsStreaming(false);
-    }
-  }, [sessionId]);
-
-  const stopStreaming = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      setIsStreaming(false);
-    }
+    setMessages((prev) => [...prev, msg]);
+    return id;
   }, []);
 
-  return { messages, isStreaming, sendMessage, stopStreaming };
+  const addAssistantPlaceholder = useCallback((): string => {
+    const id = crypto.randomUUID();
+    const msg: ChatMessage = {
+      id,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, msg]);
+    return id;
+  }, []);
+
+  const updateLastAssistant = useCallback(
+    (updater: (prev: ChatMessage) => ChatMessage) => {
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastIdx = updated.length - 1;
+        if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+          updated[lastIdx] = updater(updated[lastIdx]);
+        }
+        return updated;
+      });
+    },
+    [],
+  );
+
+  const sendMessage = useCallback(
+    async (userInput: string) => {
+      if (!sessionId || isStreaming) return;
+
+      abortRef.current = false;
+
+      addUserMessage(userInput);
+      addAssistantPlaceholder();
+      setIsStreaming(true);
+
+      let accumulated = '';
+      let sources: SourceCitation[] = [];
+
+      try {
+        for await (const event of streamChat(userInput, sessionId)) {
+          if (abortRef.current) break;
+
+          if (event.type === 'token' && event.content) {
+            accumulated += event.content;
+            updateLastAssistant((msg) => ({ ...msg, content: accumulated }));
+          } else if (event.type === 'sources' && event.sources) {
+            sources = event.sources;
+          } else if (event.type === 'error' && event.content) {
+            accumulated += `\n\n⚠️ ${event.content}`;
+            updateLastAssistant((msg) => ({ ...msg, content: accumulated }));
+          } else if (event.type === 'done') {
+            break;
+          }
+        }
+      } catch (err) {
+        const errMsg = (err as Error).message;
+        accumulated += accumulated
+          ? `\n\n⚠️ Stream error: ${errMsg}`
+          : `⚠️ Failed to get response: ${errMsg}`;
+        updateLastAssistant((msg) => ({ ...msg, content: accumulated }));
+      } finally {
+        // Attach sources on final update
+        updateLastAssistant((msg) => ({ ...msg, content: accumulated, sources }));
+        setIsStreaming(false);
+      }
+    },
+    [sessionId, isStreaming, addUserMessage, addAssistantPlaceholder, updateLastAssistant],
+  );
+
+  /**
+   * Inject a message pair externally (used by DeepAnalysisButton).
+   * Returns functions to stream into the assistant placeholder.
+   */
+  const startExternalStream = useCallback(
+    (userContent: string) => {
+      if (isStreaming) return null;
+      addUserMessage(userContent);
+      addAssistantPlaceholder();
+      setIsStreaming(true);
+      abortRef.current = false;
+
+      let accumulated = '';
+
+      return {
+        appendToken: (token: string) => {
+          accumulated += token;
+          updateLastAssistant((msg) => ({ ...msg, content: accumulated }));
+        },
+        finish: () => {
+          setIsStreaming(false);
+        },
+      };
+    },
+    [isStreaming, addUserMessage, addAssistantPlaceholder, updateLastAssistant],
+  );
+
+  const stopStreaming = useCallback(() => {
+    abortRef.current = true;
+    setIsStreaming(false);
+  }, []);
+
+  const clearMessages = useCallback(() => {
+    setMessages([]);
+  }, []);
+
+  return {
+    messages,
+    isStreaming,
+    sendMessage,
+    stopStreaming,
+    clearMessages,
+    startExternalStream,
+  };
 }
