@@ -221,24 +221,19 @@ def clear_session_data(video_ids: list[str] = None):
     store = get_vector_store()
 
     if video_ids:
-        # Delete by video_id filter
         for vid in video_ids:
             try:
-                collection = store._collection
-                results = collection.get(where={"video_id": vid})
-                if results and results['ids']:
-                    collection.delete(ids=results['ids'])
-                    logger.info(f"Cleared {len(results['ids'])} chunks for video {vid}")
+                # Use langchain-chroma delete interface
+                store.delete(where={"video_id": vid})
+                logger.info(f"Cleared chunks for video {vid}")
             except Exception as e:
                 logger.warning(f"Error clearing data for {vid}: {e}")
     else:
-        # Clear entire collection
         try:
-            collection = store._collection
-            count = collection.count()
-            if count > 0:
-                all_ids = collection.get()['ids']
-                collection.delete(ids=all_ids)
-                logger.info(f"Cleared all {count} chunks from vector store")
+            # Get all docs and delete by ids
+            results = store.get()
+            if results and results.get('ids'):
+                store.delete(ids=results['ids'])
+                logger.info(f"Cleared all chunks from vector store")
         except Exception as e:
             logger.warning(f"Error clearing vector store: {e}")
